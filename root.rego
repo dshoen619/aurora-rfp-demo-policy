@@ -6,16 +6,13 @@ import data.permit.policies
 
 default allow := false
 
+# Aurora demo (R5): the generated policy (RBAC, ReBAC, ABAC) must allow AND the request must satisfy
+# the acting-organization constraint in custom/root.rego. Custom code can only narrow access.
+# Permit may regenerate this file after policy changes in the dashboard; re-apply with
+# scripts/apply-policy.sh in the demo folder if `npm run verify` reports the constraint missing.
 allow {
 	policies.allow
-}
-
-# NOTE: you can add more conditions here to get an AND effect
-# i.e: assume you added my_custom_rule here
-# The policy will allow if BOTH policies.allow and my_custom_rule are true
-
-allow {
-	custom.allow
+	custom.acting_org_ok
 }
 
 allowing_sources := policies.__allow_sources
@@ -39,5 +36,5 @@ debugger_activated {
 
 debug = result {
 	debugger_activated
-	result := debug.debug
+	result := object.union(debug.debug, {"acting_org": custom.acting_org_debug})
 }
