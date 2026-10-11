@@ -8,8 +8,8 @@ default allow := false
 
 # Aurora demo (R5): the generated policy (RBAC, ReBAC, ABAC) must allow AND the request must satisfy
 # the acting-organization constraint in custom/root.rego. Custom code can only narrow access.
-# Permit may regenerate this file after policy changes in the dashboard; re-apply with
-# scripts/apply-policy.sh in the demo folder if `npm run verify` reports the constraint missing.
+# Permit may regenerate this file after policy changes in the dashboard. If `npm run verify`
+# reports the rule missing, run `npm run apply-policy` in the demo folder to re-apply it.
 allow {
 	policies.allow
 	custom.acting_org_ok
