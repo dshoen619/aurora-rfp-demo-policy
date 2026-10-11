@@ -4,7 +4,7 @@ import future.keywords.in
 
 # Installed into the GitOps repo (custom/root.rego) by `make apply-policy`, which stamps the version
 # below whenever these rules change. Every decision's debug output carries it (scenario 17).
-policy_version := "2026-10-11T16:45:19Z"
+policy_version := "2026-10-11T17:04:12Z"
 
 # Permit's OR extension point. It stays false: the grants below go through their own allow rule in
 # root.rego, which also requires every constraint.
@@ -70,9 +70,14 @@ operator_access {
 
 default acting_org_ok := false
 
-# Type-level checks and resources not stored in Permit have no owning organization to compare.
+# A check about a specific resource (it names a key) must find that resource in the PDP's data. A
+# type-level check (no key) has no owning organization to compare. An unknown resource fails closed.
+resource_key_given {
+	input.resource.key != ""
+}
+
 acting_org_ok {
-	not resource_org
+	not resource_key_given
 }
 
 acting_org_ok {
@@ -92,6 +97,8 @@ acting_org_code := "same_org" {
 	acting_org == null
 } else := "acting_org_mismatch" {
 	resource_org
+} else := "unknown_resource" {
+	resource_key_given
 } else := "not_applicable" {
 	true
 }
@@ -104,7 +111,9 @@ acting_org_reason := sprintf("%s belongs to the acting organization '%s'", [inst
 	acting_org_code == "no_acting_org"
 } else := sprintf("%s belongs to organization '%s', but the request acts for '%s': roles and relationships held through other organizations do not apply", [instance_key, resource_org, acting_org]) {
 	acting_org_code == "acting_org_mismatch"
-} else := "the resource is not stored in Permit, so the organization constraint does not apply" {
+} else := sprintf("%s is not in the PDP's data, so its organization can't be checked: denied", [instance_key]) {
+	acting_org_code == "unknown_resource"
+} else := "a type-level check has no resource organization to compare" {
 	true
 }
 
@@ -170,7 +179,7 @@ fleet_violations[v] {
 	acting_org == truck.tenant
 	input.action in operational_actions
 	input.action != "view"
-	v := {"code": "operated_by_other_org", "reason": sprintf("%s is operated by '%s': operational actions belong to the operating organization", [truck_id, truck.attributes.operator_org])}
+	v := {"code": "operated_by_other_org", "operator_org": truck.attributes.operator_org, "reason": sprintf("%s is operated by '%s': operational actions belong to the operating organization", [truck_id, truck.attributes.operator_org])}
 }
 
 fleet_rules_ok {
