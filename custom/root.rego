@@ -2,15 +2,16 @@ package permit.custom
 
 import future.keywords.in
 
-# Permit's OR extension point. It stays false: nothing in this folder grants access.
+# Installed into the GitOps repo (custom/root.rego) by `make apply-policy`, which stamps the version
+# below whenever these rules change. Every decision's debug output carries it (scenario 17).
+policy_version := "2026-10-11T16:45:19Z"
+
+# Permit's OR extension point. It stays false: the grants below go through their own allow rule in
+# root.rego, which also requires every constraint.
 default allow := false
 
 # -------------------------------------------------------------------------------------------------
-# R5 (Aurora FGA RFP): every decision is constrained to the acting organization.
-#
-# The application sends the acting organization as the check's tenant. When the resource instance
-# is stored in Permit, it must belong to that organization, so roles and relationships the user
-# holds in other organizations never apply. root.rego requires `acting_org_ok` on every allow.
+# Facts about the request.
 # -------------------------------------------------------------------------------------------------
 
 acting_org := object.get(input.resource, "tenant", null)
@@ -18,6 +19,54 @@ acting_org := object.get(input.resource, "tenant", null)
 instance_key := sprintf("%s:%s", [input.resource.type, input.resource.key])
 
 resource_org := data.resource_instances[instance_key].tenant
+
+user_id := sprintf("user:%s", [input.user.key])
+
+# The truck a request is about: the truck itself, or a trip's truck.
+truck_key := input.resource.key {
+	input.resource.type == "asset"
+}
+
+truck_key := key {
+	input.resource.type == "trip"
+	key := data.relationships[instance_key]["relation:parent"].asset[0]
+}
+
+truck_id := sprintf("asset:%s", [truck_key])
+
+truck := data.resource_instances[truck_id]
+
+# Org-level roles the user holds in the acting organization, and roles on its org instance.
+acting_org_roles[role] {
+	some role in data.role_assignments[user_id][sprintf("__tenant:%s", [acting_org])]
+}
+
+acting_org_roles[role] {
+	some role in data.role_assignments[user_id][sprintf("org:%s", [acting_org])]
+}
+
+platform_staff {
+	"platform_admin" in acting_org_roles
+}
+
+operational_actions := {"view", "operate", "service_basic", "service_advanced", "dispatch"}
+
+# -------------------------------------------------------------------------------------------------
+# R5: every decision is constrained to the acting organization.
+#
+# The application sends the acting organization as the check's tenant. When the resource instance
+# is stored in Permit, it must belong to that organization, so roles and relationships the user
+# holds in other organizations never apply. root.rego requires `acting_org_ok` on every allow.
+#
+# Scenario 7: the one exception is a truck owned by one organization and operated by another. The
+# operating organization may act on it (and its trips) for operational actions only.
+# -------------------------------------------------------------------------------------------------
+
+operator_access {
+	input.action in operational_actions
+	truck.attributes.operator_org == acting_org
+	truck.tenant != acting_org
+}
 
 default acting_org_ok := false
 
@@ -30,34 +79,33 @@ acting_org_ok {
 	resource_org == acting_org
 }
 
-default acting_org_code := "not_applicable"
+acting_org_ok {
+	operator_access
+}
 
 acting_org_code := "same_org" {
 	resource_org == acting_org
-}
-
-acting_org_code := "no_acting_org" {
+} else := "operator_org" {
+	operator_access
+} else := "no_acting_org" {
 	resource_org
 	acting_org == null
+} else := "acting_org_mismatch" {
+	resource_org
+} else := "not_applicable" {
+	true
 }
-
-acting_org_code := "acting_org_mismatch" {
-	resource_org != acting_org
-	acting_org != null
-}
-
-default acting_org_reason := "the resource is not stored in Permit, so the organization constraint does not apply"
 
 acting_org_reason := sprintf("%s belongs to the acting organization '%s'", [instance_key, resource_org]) {
 	acting_org_code == "same_org"
-}
-
-acting_org_reason := sprintf("%s belongs to organization '%s', but the request names no acting organization", [instance_key, resource_org]) {
+} else := sprintf("%s belongs to '%s' and is operated by the acting organization '%s', which may use it", [instance_key, resource_org, acting_org]) {
+	acting_org_code == "operator_org"
+} else := sprintf("%s belongs to organization '%s', but the request names no acting organization", [instance_key, resource_org]) {
 	acting_org_code == "no_acting_org"
-}
-
-acting_org_reason := sprintf("%s belongs to organization '%s', but the request acts for '%s': roles and relationships held through other organizations do not apply", [instance_key, resource_org, acting_org]) {
+} else := sprintf("%s belongs to organization '%s', but the request acts for '%s': roles and relationships held through other organizations do not apply", [instance_key, resource_org, acting_org]) {
 	acting_org_code == "acting_org_mismatch"
+} else := "the resource is not stored in Permit, so the organization constraint does not apply" {
+	true
 }
 
 default resource_org_or_null := null
@@ -70,4 +118,132 @@ acting_org_debug := {
 	"reason": acting_org_reason,
 	"acting_org": acting_org,
 	"resource_org": resource_org_or_null,
+}
+
+# -------------------------------------------------------------------------------------------------
+# Fleet rules: constraints every allow must also satisfy. root.rego requires `fleet_rules_ok`.
+#
+# Scenario 13: a truck's lifecycle state limits what anyone may do with it and its trips.
+# Scenario 9: service needs a certification: tier 1 or tier 2 for basic, tier 3 for advanced.
+# Scenario 7: on a truck operated by another organization, the owner keeps ownership actions only.
+# -------------------------------------------------------------------------------------------------
+
+lifecycle := truck.attributes.lifecycle_state
+
+default user_certifications := []
+
+user_certifications := certs {
+	certs := data.users[input.user.key].attributes.certifications
+}
+
+certified_basic {
+	some c in user_certifications
+	c in {"tier1", "tier2"}
+}
+
+fleet_violations[v] {
+	lifecycle == "unassigned"
+	not platform_staff
+	v := {"code": "unassigned", "reason": sprintf("%s is unassigned: only Aurora platform staff can see or use it", [truck_id])}
+}
+
+fleet_violations[v] {
+	lifecycle == "decommissioned"
+	not input.action in {"view", "decommission"}
+	v := {"code": "decommissioned", "reason": sprintf("%s is decommissioned: only view and decommission are allowed", [truck_id])}
+}
+
+fleet_violations[v] {
+	input.action == "service_basic"
+	not certified_basic
+	v := {"code": "certification_missing", "reason": "basic service needs a tier 1 or tier 2 certification"}
+}
+
+fleet_violations[v] {
+	input.action == "service_advanced"
+	not "tier3" in user_certifications
+	v := {"code": "certification_missing", "reason": "advanced service needs a tier 3 certification"}
+}
+
+fleet_violations[v] {
+	truck.attributes.operator_org != truck.tenant
+	acting_org == truck.tenant
+	input.action in operational_actions
+	input.action != "view"
+	v := {"code": "operated_by_other_org", "reason": sprintf("%s is operated by '%s': operational actions belong to the operating organization", [truck_id, truck.attributes.operator_org])}
+}
+
+fleet_rules_ok {
+	count(fleet_violations) == 0
+}
+
+# -------------------------------------------------------------------------------------------------
+# Grants. root.rego's second allow rule: one of these, AND the acting-organization rule, AND the
+# fleet rules.
+#
+# Scenario 7: the operating organization's people use a truck it operates for another organization,
+# by the role they hold in their own organization.
+# Scenario 14: a time-boxed break-glass grant for an incident. It expires by the clock, with no
+# cleanup job. Grants are a user attribute: [{tenant, incident_id, expires_at (Unix seconds)}].
+# -------------------------------------------------------------------------------------------------
+
+operator_grants := {
+	"org_admin": operational_actions,
+	"operator": operational_actions,
+	"platform_admin": operational_actions,
+	"technician": {"view", "service_basic", "service_advanced"},
+	"viewer": {"view"},
+}
+
+operator_org_allow {
+	operator_access
+	some role in acting_org_roles
+	input.action in operator_grants[role]
+}
+
+breakglass_grants[g] {
+	some g in object.get(data.users[input.user.key].attributes, "breakglass", [])
+	g.tenant == acting_org
+	time.now_ns() < g.expires_at * 1000000000
+}
+
+breakglass_allow {
+	input.resource.type in {"asset", "trip"}
+	input.action in {"view", "service_basic"}
+	resource_org == acting_org
+	count(breakglass_grants) > 0
+}
+
+extra_allow {
+	operator_org_allow
+}
+
+extra_allow {
+	breakglass_allow
+}
+
+# -------------------------------------------------------------------------------------------------
+# Debug output, merged into every decision's debug by root.rego.
+# -------------------------------------------------------------------------------------------------
+
+default granted_by := null
+
+granted_by := "operator_org" {
+	operator_org_allow
+} else := "breakglass" {
+	breakglass_allow
+}
+
+default fleet_rules_pass := false
+
+fleet_rules_pass {
+	fleet_rules_ok
+}
+
+fleet_rules_debug := {
+	"allow": fleet_rules_pass,
+	"violations": [v | some v in fleet_violations],
+	"granted_by": granted_by,
+	"breakglass": [g | some g in breakglass_grants],
+	"policy_version": policy_version,
 }
