@@ -9,7 +9,7 @@ default resourceset_serviceable_5ftrucks = false
 resourceset_serviceable_5ftrucks {
 	attributes.resource.lifecycle_state == "active"
 	attributes.resource.geofence == "depot"
-	attributes.resource.local_hour >= 6
+	attributes.resource.local_hour >= 2
 	attributes.resource.local_hour < 22
 	attributes.resource.type == "asset"
 }
