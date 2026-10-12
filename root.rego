@@ -7,8 +7,8 @@ import data.permit.policies
 default allow := false
 
 # Aurora demo: the generated policy (RBAC, ReBAC, ABAC) or a grant in custom/root.rego must allow,
-# AND the request must satisfy the acting-organization rule (R5) and the fleet rules in
-# custom/root.rego. Custom code adds constraints, and grants only through the second rule.
+# AND the request must satisfy the tenant-isolation rule and the fleet rules in custom/root.rego.
+# Custom code adds constraints, and grants only through the second rule.
 # Permit may regenerate this file after policy changes in the dashboard. If `make verify` reports
 # the rules missing, run `make apply-policy` in fleetops-go to re-apply them.
 allow {
