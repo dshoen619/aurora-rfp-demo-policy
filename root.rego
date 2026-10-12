@@ -6,29 +6,22 @@ import data.permit.policies
 
 default allow := false
 
-# TEST: the custom rules are commented out, so only Permit's generated policy (RBAC, ReBAC, ABAC)
-# decides. custom/root.rego is untouched; nothing consults it. To turn the rules back on, run
-# `make apply-policy` in fleetops-go (it re-applies the block below, with a fresh version stamp).
+# Aurora demo: the generated policy (RBAC, ReBAC, ABAC) or a grant in custom/root.rego must allow,
+# AND the request must satisfy the acting-organization rule (R5) and the fleet rules in
+# custom/root.rego. Custom code adds constraints, and grants only through the second rule.
+# Permit may regenerate this file after policy changes in the dashboard. If `make verify` reports
+# the rules missing, run `make apply-policy` in fleetops-go to re-apply them.
 allow {
 	policies.allow
+	custom.acting_org_ok
+	custom.fleet_rules_ok
 }
 
 allow {
-	custom.allow
+	custom.extra_allow
+	custom.acting_org_ok
+	custom.fleet_rules_ok
 }
-
-# Custom rules, off:
-# allow {
-# 	policies.allow
-# 	custom.acting_org_ok
-# 	custom.fleet_rules_ok
-# }
-#
-# allow {
-# 	custom.extra_allow
-# 	custom.acting_org_ok
-# 	custom.fleet_rules_ok
-# }
 
 allowing_sources := policies.__allow_sources
 
@@ -51,6 +44,5 @@ debugger_activated {
 
 debug = result {
 	debugger_activated
-	# result := object.union(debug.debug, {"acting_org": custom.acting_org_debug, "fleet_rules": custom.fleet_rules_debug})
-	result := debug.debug
+	result := object.union(debug.debug, {"acting_org": custom.acting_org_debug, "fleet_rules": custom.fleet_rules_debug})
 }
